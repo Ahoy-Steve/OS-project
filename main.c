@@ -4,11 +4,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #define NAME_LEN 64
 #define ISSUE_LEN 50
 #define DESCRIPTION_LEN 256
-
+#define PATH_LEN 256
 
 typedef struct {
     double longitude;
@@ -25,6 +26,50 @@ typedef struct {
     char description[DESCRIPTION_LEN];
 }REPORT_T;
 
+void create_district(char *district_id) {
+    //Create the district directory
+    mkdir(district_id, 0750);
+    chmod(district_id, 0750);
+
+    //Build the paths
+    char reports_path[PATH_LEN];
+    char cfg_path[PATH_LEN];
+    char log_path[PATH_LEN];
+
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+    snprintf(cfg_path, sizeof(cfg_path), "%s/district.cfg", district_id);
+    snprintf(log_path, sizeof(log_path), "%s/logged_district", district_id);
+
+    //Creating the files and setting their permissions
+    int input;
+
+    input = open(reports_path, O_WRONLY | O_CREAT, 0664);
+    if (input >= 0) {
+        chmod(reports_path, 0664);
+        close(input);
+    }
+
+    input = open(cfg_path, O_WRONLY | O_CREAT, 0640);
+    if (input >= 0) {
+        chmod(cfg_path, 0640);
+        close(input);
+    }
+
+    input = open(log_path, O_WRONLY | O_CREAT, 0664);
+    if (input >= 0) {
+        chmod(log_path, 0644);
+        close(input);
+    }
+}
+
+int check_permissions(char *path, mode_t required_mask) {
+    struct stat st;
+    if (stat(path, &st) < 0) {
+        perror(path);
+        return 1;
+    }
+    return (st.st_mode & required_mask) == required_mask;
+}
 
 int main(int argc, char *argv[]) {
     char *role = NULL, * user = NULL, *command = NULL;
