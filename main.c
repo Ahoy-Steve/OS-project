@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 
 #define NAME_LEN 64
@@ -70,6 +71,89 @@ int check_permissions(char *path, mode_t required_mask) {
     }
     return (st.st_mode & required_mask) == required_mask;
 }
+
+void mode_to_string(mode_t mode, char *mode_str) {
+    mode_str[0] = (mode & S_IRUSR) ? 'r' : '-';
+    mode_str[1] = (mode & S_IWUSR) ? 'w' : '-';
+    mode_str[2] = (mode & S_IXUSR) ? 'x' : '-';
+    mode_str[3] = (mode & S_IRGRP) ? 'r' : '-';
+    mode_str[4] = (mode & S_IWGRP) ? 'w' : '-';
+    mode_str[5] = (mode & S_IXGRP) ? 'x' : '-';
+    mode_str[6] = (mode & S_IROTH) ? 'r' : '-';
+    mode_str[7] = (mode & S_IWOTH) ? 'w' : '-';
+    mode_str[8] = (mode & S_IXOTH) ? 'x' : '-';
+    mode_str[9] = '\0';
+}
+
+void add(char *role, char *user, char *district_id) {
+    create_district(district_id);
+
+    char reports_path[PATH_LEN];
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+
+    int fd = open(reports_path, O_RDWR | O_CREAT, 0664);
+    if (fd < 0) {
+        perror("open reports_path");
+        exit(1);
+    }
+
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    int noRecords = file_size / sizeof(REPORT_T);
+
+    REPORT_T report;
+    memset(&report, 0, sizeof(REPORT_T));
+
+    report.id = noRecords + 1;
+    strncpy(report.name, user, NAME_LEN - 1);
+    report.timestamp = time(NULL);
+
+    printf("X: ");
+    scanf("%lf\n", &report.gps.longitude);
+
+    printf("Y: ");
+    scanf("%lf\n", &report.gps.latitude);
+
+    printf("Issue category (road/lighting/flooding/other): ");
+    scanf("%s\n", &report.issue);
+
+    printf("Severity level (1/2/3): ");
+    scanf("%d\n", &report.severity);
+
+    printf("Description: ");
+    fgets(report.description, DESCRIPTION_LEN, stdin);
+
+    if (write(fd, &report, sizeof(REPORT_T)) != sizeof(REPORT_T)) {
+        perror("write");
+    }
+    else {
+        printf("Report %d added to the district: %s\n", report.id, district_id);
+    }
+    close(fd);
+}
+
+void list(char *role, char *district_id) {
+    char reports_path[PATH_LEN];
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+    struct stat st;
+    if (stat(reports_path, &st) < 0) {
+        perror("stat");
+        exit(1);
+    }
+
+    char permisions[10];
+    mode_to_string(st.st_mode, permisions);
+
+    char time_buf[64];
+    struct tm *tm_info = localtime(&st.st_mtime);
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    printf("File: %s\n", reports_path);
+    printf("Permisions: %s\n", permisions);
+    printf("Size: %lld bytes\n", (long long) st.st_size);
+    printf("Last modified: %s\n\n", time_buf);
+
+    //Reading each report
+};
 
 int main(int argc, char *argv[]) {
     char *role = NULL, * user = NULL, *command = NULL;
