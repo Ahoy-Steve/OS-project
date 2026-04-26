@@ -91,13 +91,13 @@ void log_action(char *district_id, char *role, char *user, char *action) {
 
     if (strcmp(role, "inspector") == 0) {
         fprintf(stderr, "Permission denied: inspector cannot write log.\n");
-        exit(1);
+        return;
     }
 
     int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0) {
         perror("open log");
-        exit(1);
+        return;
     }
 
     char time_buff[32];
@@ -112,6 +112,23 @@ void log_action(char *district_id, char *role, char *user, char *action) {
     close(fd);
 }
 
+void check_symlink(char *district_id) {
+    char link_name[PATH_LEN];
+    snprintf(link_name, sizeof(link_name), "active_reports-%s", district_id);
+
+    struct stat lst;
+    if (lstat(link_name, &lst) < 0) {
+        return;
+    }
+
+    if (S_ISLNK(lst.st_mode)) {
+        struct stat tgt;
+        if (stat(link_name, &tgt) < 0) {
+            fprintf(stderr, "Warning: active_reports-%s is a dangling symlink.\n", district_id);
+        }
+    }
+}
+
 void add(char *role, char *user, char *district_id) {
     create_district(district_id);
 
@@ -121,7 +138,7 @@ void add(char *role, char *user, char *district_id) {
     int fd = open(reports_path, O_RDWR | O_CREAT, 0664);
     if (fd < 0) {
         perror("open reports_path");
-        exit(1);
+        return;
     }
 
     off_t file_size = lseek(fd, 0, SEEK_END);
@@ -167,12 +184,14 @@ void add(char *role, char *user, char *district_id) {
 }
 
 void list(char *role, char *district_id) {
+    check_symlink(district_id);
+
     char reports_path[PATH_LEN];
     snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
     struct stat st;
     if (stat(reports_path, &st) < 0) {
         perror("stat");
-        exit(1);
+        return;
     }
 
     char permisions[10];
@@ -222,20 +241,20 @@ void view (char *role, char *user, char *district_id, int report_id) {
     if (lseek(fd, offset, SEEK_SET) < 0) {
         fprintf(stderr, "Report %d not found.\n", report_id);
         close(fd);
-        exit(1);
+        return;
     }
 
     REPORT_T report;
     if (read(fd, &report, sizeof(REPORT_T)) != sizeof(REPORT_T)) {
         fprintf(stderr, "Report %d not found or file corrupted.\n", report_id);
         close(fd);
-        exit(1);
+        return;
     }
 
     if (report_id != report.id) {
         fprintf(stderr, "Report %d not identified correctly.\n", report_id);
         close(fd);
-        exit(1);
+        return;
     }
 
     char time_buff[64];
@@ -257,7 +276,7 @@ void view (char *role, char *user, char *district_id, int report_id) {
 void remove_report(char *role, char *user, char *district_id, int report_id) {
     if (strcmp(role, "manager") != 0) {
         fprintf(stderr, "Permisson denied: only managers can remove reports.\n");
-        exit(1);
+        return;
     }
 
     char reports_path[PATH_LEN];
@@ -266,7 +285,7 @@ void remove_report(char *role, char *user, char *district_id, int report_id) {
     int fd = open(reports_path, O_RDWR);
     if (fd < 0) {
         perror("open reports.dat in remove_report");
-        exit(1);
+        return;
     }
 
     off_t file_size = lseek(fd, 0, SEEK_END);
@@ -287,7 +306,7 @@ void remove_report(char *role, char *user, char *district_id, int report_id) {
     if (target_index == -1) {
         fprintf(stderr, "Report %d not found.\n", report_id);
         close(fd);
-        exit(1);
+        return;
     }
 
     for (int i = target_index + 1; i < num_records; i++) {
@@ -310,7 +329,7 @@ void update_threshold(char *role, char *user, char *district_id, int threshold) 
 
     if (strcmp(role, "manager") != 0) {
         fprintf(stderr, "Permission denied: only managers can update threshold.\n");
-        exit(1);
+        return;
     }
 
     char cfg_path[PATH_LEN];
@@ -319,18 +338,18 @@ void update_threshold(char *role, char *user, char *district_id, int threshold) 
     struct stat st;
     if (stat(cfg_path, &st) < 0) {
         perror("stat district.cfg");
-        exit(1);
+        return;
     }
 
     if ((st.st_mode & 0777) != 0640) {
         fprintf(stderr, "Warning: Expected 640, got %o. Refusing to write.\n", st.st_mode & 0777);
-        exit(1);
+        return;
     }
 
     int fd = open(cfg_path, O_WRONLY| O_TRUNC, 0640);
     if (fd < 0) {
         perror("open district.cfg");
-        exit(1);
+        return;
     }
 
     char buffer[64];
@@ -342,10 +361,121 @@ void update_threshold(char *role, char *user, char *district_id, int threshold) 
     log_action(district_id, role, user, "Updated threshold");
 }
 
+int parse_condition(const char *input, char *field, char *op, char *value) {
+    // Find the first and second colons in the string
+    const char *colon1 = strchr(input, ':');
+    if (!colon1) return 0; // Invalid format
+
+    const char *colon2 = strchr(colon1 + 1, ':');
+    if (!colon2) return 0; // Invalid format
+
+    // Extract the 'field' part
+    size_t field_len = colon1 - input;
+    strncpy(field, input, field_len);
+    field[field_len] = '\0';
+
+    // Extract the 'operator' part
+    size_t op_len = colon2 - (colon1 + 1);
+    strncpy(op, colon1 + 1, op_len);
+    op[op_len] = '\0';
+
+    // Extract the 'value' part (everything after the second colon)
+    strcpy(value, colon2 + 1);
+
+    return 1;
+}
+
+int match_condition(REPORT_T *report, const char *field, const char *op, const char *value) {
+    // Handling integer comparisons for severity
+    if (strcmp(field, "severity") == 0) {
+        int sev_val = atoi(value);
+        if (strcmp(op, "==") == 0) return report->severity == sev_val;
+        if (strcmp(op, "!=") == 0) return report->severity != sev_val;
+        if (strcmp(op, "<") == 0)  return report->severity < sev_val;
+        if (strcmp(op, "<=") == 0) return report->severity <= sev_val;
+        if (strcmp(op, ">") == 0)  return report->severity > sev_val;
+        if (strcmp(op, ">=") == 0) return report->severity >= sev_val;
+    }
+    // Handling integer comparisons for timestamp
+    else if (strcmp(field, "timestamp") == 0) {
+        time_t ts_val = (time_t)atol(value);
+        if (strcmp(op, "==") == 0) return report->timestamp == ts_val;
+        if (strcmp(op, "!=") == 0) return report->timestamp != ts_val;
+        if (strcmp(op, "<") == 0)  return report->timestamp < ts_val;
+        if (strcmp(op, "<=") == 0) return report->timestamp <= ts_val;
+        if (strcmp(op, ">") == 0)  return report->timestamp > ts_val;
+        if (strcmp(op, ">=") == 0) return report->timestamp >= ts_val;
+    }
+    // Handling string comparisons for category
+    else if (strcmp(field, "category") == 0) {
+        if (strcmp(op, "==") == 0) return strcmp(report->issue, value) == 0;
+        if (strcmp(op, "!=") == 0) return strcmp(report->issue, value) != 0;
+    }
+    // Handling string comparisons for inspector
+    else if (strcmp(field, "inspector") == 0) {
+        if (strcmp(op, "==") == 0) return strcmp(report->name, value) == 0;
+        if (strcmp(op, "!=") == 0) return strcmp(report->name, value) != 0;
+    }
+
+    fprintf(stderr, "Unknown field or operator: %s %s\n", field, op);
+    return 0;
+}
+
+void filter(char *role, char *user, char *district_id, char **conds, int num_cond) {
+    char reports_path[PATH_LEN];
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+
+    int fd = open(reports_path, O_RDONLY);
+    if (fd < 0) {
+        perror("open reports.dat in filter");
+        return;
+    }
+
+    REPORT_T report;
+    int found = 0;
+
+    while (read(fd, &report, sizeof(REPORT_T)) == sizeof(REPORT_T)) {
+        int match =1;
+
+        for (int i = 0; i < num_cond; i++) {
+            char field[32], op[4], value[64];
+            if (!parse_condition(conds[i], field, op, value)) {
+                fprintf(stderr, "Invalid condition format: %s\n", conds[i]);
+                match = 0;
+                break;
+            }
+            if (!match_condition(&report, field, op, value)) {
+                match = 0;
+                break;
+            }
+        }
+
+        if (match) {
+            char time_buffer[32];
+            struct tm *tm_info = localtime(&report.timestamp);
+            strftime(time_buffer,sizeof(time_buffer),"%Y-%m-%d %H:%M:%S",tm_info);
+            printf("ID: %-5d Inspector: %-20s Issue Category: %-10s Severity: %d Time: %s\n", report.id, report.name, report.issue, report.severity, time_buffer);
+            found ++;
+        }
+    }
+
+    if (found == 0) {
+        printf("No reports match the given conditions.\n");
+    }
+    else {
+        printf("\n%d report(s) found.\n", found);
+    }
+
+    close(fd);
+    log_action(district_id, role, user, "Filtered by condition(s)");
+}
+
 int main(int argc, char *argv[]) {
     char *role = NULL, * user = NULL, *command = NULL;
     char *firstArg = NULL;
     char *secondArg = NULL;
+    char **filterConds = NULL;
+    int filterCount = 0;
 
     //Storing each argument in their varible
     for (int i = 1; i < argc; i++) {
@@ -380,13 +510,16 @@ int main(int argc, char *argv[]) {
         else if (strcmp(argv[i], "--filter") == 0) {
             command = "filter";
             firstArg = argv[++i];
+            filterConds = &argv[i + 1];
+            filterCount = argc - i - 1;
+            break;
         }
     }
 
     //Making sure that everything is set okay
     if (!role || !command) {
         fprintf(stderr, "Usage: city_manager --role <role> --user <user> <command> \n");
-        exit(1);
+        return 1;
     }
      if(strcmp(command, "add") == 0) {
         add(role, user, firstArg);
@@ -405,11 +538,11 @@ int main(int argc, char *argv[]) {
         update_threshold(role, user, firstArg, atoi(secondArg));
     }
     else if(strcmp(command, "filter") == 0) {
-        //filter
+        filter(role, user, firstArg, filterConds, filterCount);
     }
     else {
         fprintf(stderr, "Unknown command %s\n", command);
-        exit(1);
+        return 1;
     }
     return 0;
 }
