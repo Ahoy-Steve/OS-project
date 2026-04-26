@@ -85,6 +85,33 @@ void mode_to_string(mode_t mode, char *mode_str) {
     mode_str[9] = '\0';
 }
 
+void log_action(char *district_id, char *role, char *user, char *action) {
+    char log_path[PATH_LEN];
+    snprintf(log_path, sizeof(log_path), "%s/logged_district", district_id);
+
+    if (strcmp(role, "inspector") == 0) {
+        fprintf(stderr, "Permission denied: inspector cannot write log.\n");
+        exit(1);
+    }
+
+    int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+        perror("open log");
+        exit(1);
+    }
+
+    char time_buff[32];
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    strftime(time_buff, sizeof(time_buff), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    char entry[512];
+    int len = snprintf(entry, sizeof(entry), "[%s] role=%s user=%s action=%s\n", time_buff, role, user, action);
+
+    write(fd, entry, len);
+    close(fd);
+}
+
 void add(char *role, char *user, char *district_id) {
     create_district(district_id);
 
@@ -108,19 +135,21 @@ void add(char *role, char *user, char *district_id) {
     report.timestamp = time(NULL);
 
     printf("X: ");
-    scanf("%lf\n", &report.gps.longitude);
+    scanf("%lf", &report.gps.longitude);
 
     printf("Y: ");
-    scanf("%lf\n", &report.gps.latitude);
+    scanf("%lf", &report.gps.latitude);
 
     printf("Issue category (road/lighting/flooding/other): ");
-    scanf("%s\n", &report.issue);
+    scanf("%49s", report.issue);
 
     printf("Severity level (1/2/3): ");
-    scanf("%d\n", &report.severity);
+    scanf("%d", &report.severity);
 
     printf("Description: ");
+    getchar();
     fgets(report.description, DESCRIPTION_LEN, stdin);
+    report.description[strcspn(report.description, "\n")] = '\0';
 
     if (write(fd, &report, sizeof(REPORT_T)) != sizeof(REPORT_T)) {
         perror("write");
@@ -129,6 +158,12 @@ void add(char *role, char *user, char *district_id) {
         printf("Report %d added to the district: %s\n", report.id, district_id);
     }
     close(fd);
+    log_action(district_id, role, user, "Added a report");
+
+    char link_name[256];
+    snprintf(link_name, sizeof(link_name), "active_reports-%s", district_id);
+    unlink(link_name);
+    symlink(reports_path, link_name);
 }
 
 void list(char *role, char *district_id) {
@@ -152,8 +187,160 @@ void list(char *role, char *district_id) {
     printf("Size: %lld bytes\n", (long long) st.st_size);
     printf("Last modified: %s\n\n", time_buf);
 
-    //Reading each report
-};
+    int fd = open(reports_path, O_RDONLY);
+    if (fd < 0) {
+        perror("open reports.dat in list");
+    }
+
+    REPORT_T report;
+    int count = 0;
+    printf("%-5s %-20s %-15s %-8s %s\n", "ID", "Inspector's name", "Issue category", "Severity", "Timestamp" );
+    printf("\n");
+    while (read(fd, &report, sizeof(REPORT_T)) == sizeof(REPORT_T)) {
+        char time_buff[32];
+        struct tm *t = localtime(&report.timestamp);
+        strftime(time_buff, sizeof(time_buff), "%Y-%m-%d %H:%M:%S", t);
+        printf("%-5d %-20s %-15s %-8d %s\n", report.id, report.name, report.issue, report.severity, time_buff);
+        count++;
+    }
+
+    if (count == 0) printf("No reports found.");
+    close(fd);
+    log_action(district_id, role, "unknown", "List reports");
+}
+
+void view (char *role, char *user, char *district_id, int report_id) {
+    char reports_path[PATH_LEN];
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+
+    int fd = open(reports_path, O_RDONLY);
+    if (fd < 0) {
+        perror("open reports.dat in view");
+    }
+
+    off_t offset = (off_t)(report_id - 1) * sizeof(REPORT_T);
+    if (lseek(fd, offset, SEEK_SET) < 0) {
+        fprintf(stderr, "Report %d not found.\n", report_id);
+        close(fd);
+        exit(1);
+    }
+
+    REPORT_T report;
+    if (read(fd, &report, sizeof(REPORT_T)) != sizeof(REPORT_T)) {
+        fprintf(stderr, "Report %d not found or file corrupted.\n", report_id);
+        close(fd);
+        exit(1);
+    }
+
+    if (report_id != report.id) {
+        fprintf(stderr, "Report %d not identified correctly.\n", report_id);
+        close(fd);
+        exit(1);
+    }
+
+    char time_buff[64];
+    struct tm *t = localtime(&report.timestamp);
+    strftime(time_buff, sizeof(time_buff), "%Y-%m-%d %H:%M:%S", t);
+
+    printf("=-=-= Report %d =-=-=\n", report.id);
+    printf("Inspector's name: %s\n", report.name);
+    printf("GPS:    X: %.6f   Y: %.6f\n", report.gps.longitude, report.gps.latitude);
+    printf("Issue category: %s\n", report.issue);
+    printf("Severity level: %d\n", report.severity);
+    printf("Timestamp: %s\n", time_buff);
+    printf("Description: %s\n", report.description);
+
+    close(fd);
+    log_action(district_id, role, user, "Viewed report");
+}
+
+void remove_report(char *role, char *user, char *district_id, int report_id) {
+    if (strcmp(role, "manager") != 0) {
+        fprintf(stderr, "Permisson denied: only managers can remove reports.\n");
+        exit(1);
+    }
+
+    char reports_path[PATH_LEN];
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+
+    int fd = open(reports_path, O_RDWR);
+    if (fd < 0) {
+        perror("open reports.dat in remove_report");
+        exit(1);
+    }
+
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    int num_records = file_size / sizeof(REPORT_T);
+
+    int target_index = -1;
+    REPORT_T report;
+
+    for (int i = 0; i < num_records; i++) {
+        lseek(fd, (off_t)i * sizeof(REPORT_T), SEEK_SET);
+        read(fd, &report, sizeof(REPORT_T));
+        if (report.id == report_id) {
+            target_index = i;
+            break;
+        }
+    }
+
+    if (target_index == -1) {
+        fprintf(stderr, "Report %d not found.\n", report_id);
+        close(fd);
+        exit(1);
+    }
+
+    for (int i = target_index + 1; i < num_records; i++) {
+        lseek(fd, (off_t)i * sizeof(REPORT_T), SEEK_SET);
+        read(fd, &report, sizeof(REPORT_T));
+
+        lseek(fd, (off_t)(i-1) * sizeof(REPORT_T), SEEK_SET);
+        write(fd, &report, sizeof(REPORT_T));
+    }
+
+    off_t new_file_size = (off_t)(num_records-1) * sizeof(REPORT_T);
+    ftruncate(fd, new_file_size);
+
+    printf("Report %d deleted from district %s.\n", report_id, district_id);
+    close(fd);
+    log_action(district_id, role, user, "Removed report");
+}
+
+void update_threshold(char *role, char *user, char *district_id, int threshold) {
+
+    if (strcmp(role, "manager") != 0) {
+        fprintf(stderr, "Permission denied: only managers can update threshold.\n");
+        exit(1);
+    }
+
+    char cfg_path[PATH_LEN];
+    snprintf(cfg_path, sizeof(cfg_path), "%s/district.cfg", district_id);
+
+    struct stat st;
+    if (stat(cfg_path, &st) < 0) {
+        perror("stat district.cfg");
+        exit(1);
+    }
+
+    if ((st.st_mode & 0777) != 0640) {
+        fprintf(stderr, "Warning: Expected 640, got %o. Refusing to write.\n", st.st_mode & 0777);
+        exit(1);
+    }
+
+    int fd = open(cfg_path, O_WRONLY| O_TRUNC, 0640);
+    if (fd < 0) {
+        perror("open district.cfg");
+        exit(1);
+    }
+
+    char buffer[64];
+    int len = snprintf(buffer, sizeof(buffer),"severity_threshold = %d\n", threshold);
+    write(fd, buffer, len);
+    close(fd);
+
+    printf("Threshold updated to %d in district %s.\n", threshold, district_id);
+    log_action(district_id, role, user, "Updated threshold");
+}
 
 int main(int argc, char *argv[]) {
     char *role = NULL, * user = NULL, *command = NULL;
@@ -163,36 +350,36 @@ int main(int argc, char *argv[]) {
     //Storing each argument in their varible
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--role") == 0) {
-            role = argv[i++];
+            role = argv[++i];
         }
         else if (strcmp(argv[i], "--user") == 0) {
-            user = argv[i++];
+            user = argv[++i];
         }
         else if (strcmp(argv[i], "--add") == 0) {
             command = "add";
-            firstArg = argv[i++];
+            firstArg = argv[++i];
         }
         else if (strcmp(argv[i], "--list") == 0) {
             command = "list";
-            firstArg = argv[i++];
+            firstArg = argv[++i];
         }
         else if (strcmp(argv[i], "--view") == 0) {
             command = "view";
-            firstArg = argv[i++];
+            firstArg = argv[++i];
         }
         else if (strcmp(argv[i], "--remove_report") == 0) {
             command = "remove_report";
-            firstArg = argv[i++];
-            secondArg = argv[i++];
+            firstArg = argv[++i];
+            secondArg = argv[++i];
         }
         else if (strcmp(argv[i], "--update_threshold") == 0) {
             command = "update_threshold";
-            firstArg = argv[i++];
-            secondArg = argv[i++];
+            firstArg = argv[++i];
+            secondArg = argv[++i];
         }
         else if (strcmp(argv[i], "--filter") == 0) {
             command = "filter";
-            firstArg = argv[i++];
+            firstArg = argv[++i];
         }
     }
 
@@ -202,20 +389,20 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
      if(strcmp(command, "add") == 0) {
-        //add
+        add(role, user, firstArg);
      }
     else if(strcmp(command, "list") == 0) {
-        //list
+        list(role, firstArg);
 
     }
     else if(strcmp(command, "view") == 0) {
-        //view
+        view(role, user, firstArg, atoi(secondArg));
     }
     else if(strcmp(command, "remove_report") == 0) {
-        //remove_report
+        remove_report(role, user, firstArg, atoi(secondArg));
     }
     else if(strcmp(command, "update_threshold") == 0) {
-        //update_thershold
+        update_threshold(role, user, firstArg, atoi(secondArg));
     }
     else if(strcmp(command, "filter") == 0) {
         //filter
