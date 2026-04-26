@@ -90,7 +90,12 @@ void log_action(char *district_id, char *role, char *user, char *action) {
     snprintf(log_path, sizeof(log_path), "%s/logged_district", district_id);
 
     if (strcmp(role, "inspector") == 0) {
-        fprintf(stderr, "Permission denied: inspector cannot write log.\n");
+        return;
+    }
+
+    struct stat st;
+    if (stat(log_path, &st) == 0 && !(st.st_mode & S_IWUSR)) {
+        fprintf(stderr, "Permission denied: owner-write bit not set on log.\n");
         return;
     }
 
@@ -183,7 +188,7 @@ void add(char *role, char *user, char *district_id) {
     symlink(reports_path, link_name);
 }
 
-void list(char *role, char *district_id) {
+void list(char *role, char *user, char *district_id) {
     check_symlink(district_id);
 
     char reports_path[PATH_LEN];
@@ -225,7 +230,7 @@ void list(char *role, char *district_id) {
 
     if (count == 0) printf("No reports found.");
     close(fd);
-    log_action(district_id, role, "unknown", "List reports");
+    log_action(district_id, role, user, "List reports");
 }
 
 void view (char *role, char *user, char *district_id, int report_id) {
@@ -281,6 +286,13 @@ void remove_report(char *role, char *user, char *district_id, int report_id) {
 
     char reports_path[PATH_LEN];
     snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
+    struct stat st;
+    if (stat(reports_path, &st) == 0) {
+        if (!(st.st_mode & S_IWUSR)) {
+            fprintf(stderr, "Permission denied: reports.dat owner-write bit not set.\n");
+            return;
+        }
+    }
 
     int fd = open(reports_path, O_RDWR);
     if (fd < 0) {
@@ -496,6 +508,7 @@ int main(int argc, char *argv[]) {
         else if (strcmp(argv[i], "--view") == 0) {
             command = "view";
             firstArg = argv[++i];
+            secondArg = argv[++i];
         }
         else if (strcmp(argv[i], "--remove_report") == 0) {
             command = "remove_report";
@@ -525,7 +538,7 @@ int main(int argc, char *argv[]) {
         add(role, user, firstArg);
      }
     else if(strcmp(command, "list") == 0) {
-        list(role, firstArg);
+        list(role, user, firstArg);
 
     }
     else if(strcmp(command, "view") == 0) {
