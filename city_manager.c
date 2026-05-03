@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #define NAME_LEN 64
 #define ISSUE_LEN 50
@@ -482,6 +483,38 @@ void filter(char *role, char *user, char *district_id, char **conds, int num_con
     log_action(district_id, role, user, "Filtered by condition(s)");
 }
 
+void remove_district(char *role, char *district_id) {
+    if (strcmp(role, "manager") != 0) {
+        fprintf(stderr, "Permission denied: only managers can remove districts.\n");
+        return;
+    }
+
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return;
+    }
+
+    if (pid == 0) {
+        execlp("rm", "rm", "-rf", district_id, NULL);
+        perror("execlp");
+        exit(1);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        char link_name[PATH_LEN];
+        snprintf(link_name, sizeof(link_name), "active_reports-%s", district_id);
+        unlink(link_name);
+        printf("District '%s' removed.\n", district_id);
+    }else {
+        fprintf(stderr, "Failed to remove district '%s'.\n", district_id);
+    }
+}
+
 int main(int argc, char *argv[]) {
     char *role = NULL, * user = NULL, *command = NULL;
     char *firstArg = NULL;
@@ -527,6 +560,10 @@ int main(int argc, char *argv[]) {
             filterCount = argc - i - 1;
             break;
         }
+        else if (strcmp(argv[i], "--remove_district") == 0) {
+            command = "remove_district";
+            firstArg = argv[++i];
+        }
     }
 
     //Making sure that everything is set okay
@@ -552,6 +589,9 @@ int main(int argc, char *argv[]) {
     }
     else if(strcmp(command, "filter") == 0) {
         filter(role, user, firstArg, filterConds, filterCount);
+    }
+    else if (strcmp(command, "remove_district") == 0) {
+        remove_district(role, firstArg);
     }
     else {
         fprintf(stderr, "Unknown command %s\n", command);
