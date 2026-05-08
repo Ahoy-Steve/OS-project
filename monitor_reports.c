@@ -33,6 +33,7 @@ int main(int argc, char *argv[]) {
 
     char pid_buf[32];
     int len = snprintf(pid_buf, sizeof(pid_buf), "%d\n", getpid());
+    write(fd, pid_buf, len);
     close(fd);
 
     printf("[monitor] Started with PID %d\n", getpid());

@@ -5,3 +5,4 @@
 [2026-04-26 20:49:25] role=manager user=alice action=Added a report
 [2026-04-26 20:50:32] role=manager user=alice action=Removed report
 [2026-04-26 20:50:46] role=manager user=alice action=Updated threshold
+[2026-05-08 09:13:19] role=manager user=alice action=Report added - monitor not running (empty .monitor_pid)

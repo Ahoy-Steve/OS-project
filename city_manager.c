@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 #define NAME_LEN 64
 #define ISSUE_LEN 50
@@ -135,6 +136,35 @@ void check_symlink(char *district_id) {
     }
 }
 
+void notify_monitor(char *district_id, char *role, char *user) {
+    char log_path[PATH_LEN];
+    snprintf(log_path, sizeof(log_path), "%s/logged_district", district_id);
+
+    int fd = open(".monitor_pid", O_RDONLY);
+    if (fd < 0) {
+        log_action(district_id, role, user, "Report added - monitor not running (no .monitor_pid)");
+        return;
+    }
+
+    char buf[32];
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+
+    if (n <= 0) {
+        log_action(district_id, role, user, "Report added - monitor not running (empty .monitor_pid)");
+        return;
+    }
+
+    pid_t monitor_pid = (pid_t)atoi(buf);
+
+    if (kill(monitor_pid, SIGUSR1) < 0) {
+        log_action(district_id, role, user, "Report added - failed to notify monitor (kill failed)");
+    }
+    else {
+        log_action(district_id, role, user, "Report added - monitor notified successfully");
+    }
+}
+
 void add(char *role, char *user, char *district_id) {
     create_district(district_id);
 
@@ -181,7 +211,7 @@ void add(char *role, char *user, char *district_id) {
         printf("Report %d added to the district: %s\n", report.id, district_id);
     }
     close(fd);
-    log_action(district_id, role, user, "Added a report");
+    notify_monitor(district_id, role, user);
 
     char link_name[256];
     snprintf(link_name, sizeof(link_name), "active_reports-%s", district_id);
