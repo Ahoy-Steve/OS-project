@@ -8,6 +8,18 @@
 #include <sys/types.h>
 
 #define PID_FILE ".monitor_pid"
+#define PIPE_FD 3
+
+static int pipe_fd = -1;
+
+void send_message(char *type, char *message) {
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf), "%s:%s\n", type, message);
+    if (pipe_fd >= 0)
+        write(pipe_fd, buf, len);
+    else
+        write(STDOUT_FILENO, buf, len);
+}
 
 void handle_sigusr1(int sig) {
     (void)sig;
@@ -24,6 +36,17 @@ void handle_sigint(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+
+    struct stat st;
+    if (fstat(PIPE_FD, &st) == 0) {
+        pipe_fd = PIPE_FD;
+    }
+
+    // int exist = open(PID_FILE, O_RDONLY);
+    // if (exist >= 0) {
+    //     char buf[32];
+    //     int
+    // }
 
     int fd = open(PID_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
